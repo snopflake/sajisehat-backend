@@ -1,0 +1,13 @@
+# Python venv
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# VSCode
+.vscode/
+
+# macOS / Windows junk
+.DS_Store
+Thumbs.db
