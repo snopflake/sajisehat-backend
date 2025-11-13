@@ -32,6 +32,7 @@ def _clean_text(raw_text: str) -> str:
     - normalisasi ke lower
     - perbaiki pola '7 9' -> '7 g'
     - perbaiki 'takaran saji 209' -> 'takaran saji 20 g'
+    - samakan variasi 'sajian/kemasan' -> 'sajian per kemasan'
     """
     text = raw_text.lower()
 
@@ -50,6 +51,9 @@ def _clean_text(raw_text: str) -> str:
 
     text = re.sub(r"takaran saji\s*(\d{2,3})9\b", fix_serving_match, text)
 
+    # 3. variasi tulisan sajian per kemasan
+    text = re.sub(r"sajian\s*/\s*kemasan", "sajian per kemasan", text)
+
     return text
 
 
@@ -57,45 +61,84 @@ def _clean_text(raw_text: str) -> str:
 
 def _parse_serving_size_gram(lines) -> Optional[float]:
     """
-    Cari baris yang mengandung 'takaran saji',
-    ambil angka yang langsung diikuti unit g/gram/ml.
+    Cari 'takaran saji' dan angka gram.
+    Support:
+      - "takaran saji 11 g"
+      - "takaran saji\n15 g"
     """
-    pattern = r"takaran saji[^0-9]{0,10}(\d+(?:[.,]\d+)?)\s*(g|gram|ml)\b"
+    joined = "\n".join(lines)
 
-    for line in lines:
-        if "takaran saji" in line:
-            m = re.search(pattern, line, flags=re.IGNORECASE)
-            if m:
-                value = _to_float(m.group(1))
-                return value
+    # 1) regex multi-baris: angka boleh di baris bawah
+    m = re.search(
+        r"takaran\s+saji[^\d]{0,40}(\d+(?:[.,]\d+)?)\s*(g|gram|ml)\b",
+        joined,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        v = _to_float(m.group(1))
+        if v is not None:
+            return v
 
-            # fallback terakhir: kalau pattern gagal, pakai angka pertama di baris
-            nums = _all_numbers(line)
-            if nums:
-                value = nums[0]
-                # heuristik ringan: kalau >100 dan diakhiri 9 (209, 309), buang 9
-                if value > 100:
-                    s_int = int(value)
-                    s_str = str(s_int)
-                    if s_str.endswith("9") and len(s_str) > 1:
-                        return float(s_str[:-1])
-                return value
+    # 2) fallback: scan per baris, dengan sedikit heuristik
+    pattern_line = r"takaran saji[^0-9]{0,10}(\d+(?:[.,]\d+)?)\s*(g|gram|ml)\b"
+
+    for i, line in enumerate(lines):
+        if "takaran saji" not in line:
+            continue
+
+        # 2a. coba langsung di baris yang sama
+        m2 = re.search(pattern_line, line, flags=re.IGNORECASE)
+        if m2:
+            return _to_float(m2.group(1))
+
+        # 2b. kalau tidak ketemu, lihat 1 baris setelahnya
+        if i + 1 < len(lines):
+            next_line = line + " " + lines[i + 1]
+            m3 = re.search(pattern_line, next_line, flags=re.IGNORECASE)
+            if m3:
+                return _to_float(m3.group(1))
+
+        # 2c. fallback terakhir: angka pertama di baris
+        nums = _all_numbers(line)
+        if nums:
+            value = nums[0]
+            # heuristik ringan: kalau >100 dan diakhiri 9 (209, 309), buang 9
+            if value > 100:
+                s_int = int(value)
+                s_str = str(s_int)
+                if s_str.endswith("9") and len(s_str) > 1:
+                    return float(s_str[:-1])
+            return value
+
     return None
 
 
 def _parse_servings_per_pack(lines) -> Optional[int]:
     """
-    Cari 'sajian per kemasan' / 'servings per pack' / 'porsi per kemasan'
+    Cari 'sajian per kemasan' / 'sajian/kemasan' / 'servings per pack' / 'porsi per kemasan'
     lalu ambil angka di depannya.
+    Support angka desimal (misal 4.5) → dibulatkan terdekat.
     """
-    pattern = r"(\d+)\s*(sajian per kemasan|servings per pack|porsi per kemasan)"
+    joined = " ".join(lines)
+
+    pattern = (
+        r"(\d+(?:[.,]\d+)?)\s*"
+        r"(sajian\s*(?:per|/)?\s*kemasan|servings\s+per\s+pack|porsi\s*(?:per|/)?\s*kemasan)"
+    )
+
+    m = re.search(pattern, joined, flags=re.IGNORECASE)
+    if m:
+        v = _to_float(m.group(1))
+        if v is not None:
+            return int(round(v))
+
+    # fallback sangat konservatif: cek per baris kalau ada kata kunci kuat
     for line in lines:
-        m = re.search(pattern, line, flags=re.IGNORECASE)
-        if m:
-            try:
-                return int(m.group(1))
-            except ValueError:
-                continue
+        if "sajian" in line and "kemasan" in line:
+            nums = _all_numbers(line)
+            if nums:
+                return int(round(nums[0]))
+
     return None
 
 
@@ -127,7 +170,6 @@ def _parse_sugar_per_serving(lines) -> Optional[float]:
 
         # 2) kalau tidak ada angka+g, jangan paksa dari angka lain,
         #    karena berisiko salah (contoh: '... Gula Garam (Natrium) 80 mg')
-        # jadi kita langsung lanjut ke baris berikutnya, tanpa fallback.
         continue
 
     return None
@@ -159,7 +201,7 @@ def parse_nutrition(raw_text: str) -> Dict:
     Fokus ke: takaran saji, jumlah sajian, gula.
     Lebih mengutamakan 'kalau ragu, biarkan null' daripada salah angka.
     """
-    cleaned = _clean_text(raw_text)
+    cleaned = _clean_text(raw_text or "")
     lines = cleaned.splitlines()
 
     # 1. Takaran saji
@@ -174,8 +216,7 @@ def parse_nutrition(raw_text: str) -> Dict:
     # 4. Gula per kemasan
     sugar_per_pack_gram = _parse_sugar_per_pack(lines)
 
-    # 5. Jika gula per kemasan tidak ada tapi gula per sajian & jumlah sajian ada,
-    #    hitung dari gula_per_sajian * jumlah_sajian
+    # 5. Kalau gula per kemasan tidak ada, tapi punya gula per sajian + jumlah sajian
     if (
         sugar_per_pack_gram is None
         and sugar_per_serving_gram is not None
