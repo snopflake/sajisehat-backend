@@ -1,3 +1,4 @@
+# app/nutrition_parser.py
 import re
 from typing import Optional, Dict
 
@@ -34,7 +35,7 @@ def _clean_text(raw_text: str) -> str:
     - perbaiki 'takaran saji 209' -> 'takaran saji 20 g'
     - samakan variasi 'sajian/kemasan' -> 'sajian per kemasan'
     """
-    text = raw_text.lower()
+    text = (raw_text or "").lower()
 
     # 1. ubah pola "7 9", "11 9" menjadi "7 g", "11 g"
     text = re.sub(r"(\d+)\s+9\b", r"\1 g", text)
@@ -65,13 +66,18 @@ def _parse_serving_size_gram(lines) -> Optional[float]:
     Support:
       - "takaran saji 11 g"
       - "takaran saji\n15 g"
+      - "takaran saji 1 4 g"  (OCR mis-split '14 g')
+      - "takaran saji\n1 4 g"
     """
-    joined = "\n".join(lines)
+    if not lines:
+        return None
 
-    # 1) regex multi-baris: angka boleh di baris bawah
+    joined_all = "\n".join(lines)
+
+    # --- 1) regex multi-baris: angka utuh diikuti unit ---
     m = re.search(
         r"takaran\s+saji[^\d]{0,40}(\d+(?:[.,]\d+)?)\s*(g|gram|ml)\b",
-        joined,
+        joined_all,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if m:
@@ -79,38 +85,63 @@ def _parse_serving_size_gram(lines) -> Optional[float]:
         if v is not None:
             return v
 
-    # 2) fallback: scan per baris, dengan sedikit heuristik
-    pattern_line = r"takaran saji[^0-9]{0,10}(\d+(?:[.,]\d+)?)\s*(g|gram|ml)\b"
+    # helper: gabung dua digit kecil jadi puluhan
+    def _join_two_small_digits(nums: list[float]) -> Optional[float]:
+        if len(nums) >= 2 and all(n < 10 for n in nums[:2]):
+            tens = int(nums[0])
+            ones = int(nums[1])
+            return float(10 * tens + ones)
+        return None
 
     for i, line in enumerate(lines):
         if "takaran saji" not in line:
             continue
 
-        # 2a. coba langsung di baris yang sama
-        m2 = re.search(pattern_line, line, flags=re.IGNORECASE)
-        if m2:
-            return _to_float(m2.group(1))
-
-        # 2b. kalau tidak ketemu, lihat 1 baris setelahnya
+        # gabungkan baris ini + baris berikutnya (kalau ada)
         if i + 1 < len(lines):
-            next_line = line + " " + lines[i + 1]
-            m3 = re.search(pattern_line, next_line, flags=re.IGNORECASE)
-            if m3:
-                return _to_float(m3.group(1))
+            combined = line + " " + lines[i + 1]
+        else:
+            combined = line
 
-        # 2c. fallback terakhir: angka pertama di baris
-        nums = _all_numbers(line)
-        if nums:
-            value = nums[0]
-            # heuristik ringan: kalau >100 dan diakhiri 9 (209, 309), buang 9
-            if value > 100:
-                s_int = int(value)
-                s_str = str(s_int)
-                if s_str.endswith("9") and len(s_str) > 1:
-                    return float(s_str[:-1])
-            return value
+        # --- 2) coba pola 'takaran saji ... 1 4 g' langsung di gabungan ---
+        m2 = re.search(
+            r"takaran\s+saji[^\d]{0,40}(\d)\s+(\d)\s*(g|gram|ml)?\b",
+            combined,
+            flags=re.IGNORECASE,
+        )
+        if m2:
+            tens = int(m2.group(1))
+            ones = int(m2.group(2))
+            return float(10 * tens + ones)
+
+        # --- 3) coba pola normal di gabungan baris ---
+        m3 = re.search(
+            r"takaran\s+saji[^0-9]{0,10}(\d+(?:[.,]\d+)?)\s*(g|gram|ml)?\b",
+            combined,
+            flags=re.IGNORECASE,
+        )
+        if m3:
+            v = _to_float(m3.group(1))
+            if v is not None:
+                return v
+
+        # --- 4) fallback: lihat semua angka di gabungan baris ---
+        nums_combined = _all_numbers(combined)
+        if nums_combined:
+            # 4a. kalau dua angka pertama kecil (<10), gabung jadi puluhan
+            joined_val = _join_two_small_digits(nums_combined)
+            if joined_val is not None:
+                return joined_val
+
+            # 4b. kalau angka pertama sudah >= 10, pakai langsung (mis. 14, 22, 30)
+            if nums_combined[0] >= 10:
+                return nums_combined[0]
+
+            # 4c. terakhir banget, pakai nilai pertama apa adanya (mis. kasus aneh 5 g)
+            return nums_combined[0]
 
     return None
+
 
 
 def _parse_servings_per_pack(lines) -> Optional[int]:
@@ -144,33 +175,72 @@ def _parse_servings_per_pack(lines) -> Optional[int]:
 
 def _parse_sugar_per_serving(lines) -> Optional[float]:
     """
-    Cari baris yang mengandung 'gula', 'gula total', atau 'sukrosa'.
-    - Hanya hitung angka yang diikuti unit g/gram.
-    - Kalau ada beberapa angka di baris itu, ambil ANGKA TERAKHIR (biasanya per sajian).
-    - Baris yang juga mengandung 'garam' / 'natrium' diabaikan di fallback,
-      supaya tidak salah ambil 80 mg Natrium.
+    Cari nilai gula per sajian.
+    Strategi:
+      1) Cari pola global: "gula total ... 9 g" (boleh lintas baris).
+      2) Kalau belum ketemu, fallback ke pencarian per-baris
+         seperti sebelumnya (dengan dukungan next-line).
     """
+    if not lines:
+        return None
+
+    # ---------- 1) Pencarian global di sekitar kata "gula" ----------
+    joined = "\n".join(lines)
+
+    # Contoh yang ingin ditangkap:
+    # - "Gula total 9 g"
+    # - "Gula total\n9 g"
+    # - "Gula total : 9 g"
+    m = re.search(
+        r"gula(?:\s+total)?[^\d]{0,40}(\d+(?:[.,]\d+)?)\s*(g|gram|mg)?",
+        joined,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        val = _to_float(m.group(1))
+        unit = (m.group(2) or "").lower()
+
+        if val is not None:
+            if unit == "mg":
+                # konversi mg -> g
+                return val / 1000.0
+            # kalau tidak ada unit / 'g' / 'gram', anggap gram
+            return val
+
+    # ---------- 2) Fallback per-baris (lebih konservatif) ----------
     sugar_keywords = ("gula", "sugar", "sukrosa", "sucrose")
 
-    for line in lines:
+    for i, line in enumerate(lines):
         if not any(k in line for k in sugar_keywords):
             continue
 
-        # 1) coba cari semua angka yang punya unit g/gram
+        # Gabungkan dengan baris berikutnya, jaga-jaga angka terpisah
+        candidate = line
+        if i + 1 < len(lines):
+            candidate = line + " " + lines[i + 1]
+
         matches = re.findall(
-            r"(\d+(?:[.,]\d+)?)\s*(g|gram)\b",
-            line,
+            r"(\d+(?:[.,]\d+)?)\s*(g|gram|mg)?",
+            candidate,
             flags=re.IGNORECASE,
         )
-        values = [_to_float(m[0]) for m in matches if _to_float(m[0]) is not None]
+        if not matches:
+            continue
 
-        if values:
-            # kalau ada banyak angka (tabel 2 kolom), ambil yang terakhir
-            return values[-1]
+        # Prioritaskan yang punya unit, ambil angka terakhir
+        chosen_val = None
+        for num_str, unit in matches:
+            v = _to_float(num_str)
+            if v is None:
+                continue
+            unit = (unit or "").lower()
+            if unit in ("g", "gram", ""):
+                chosen_val = v  # as gram
+            elif unit == "mg":
+                chosen_val = v / 1000.0  # mg -> g
 
-        # 2) kalau tidak ada angka+g, jangan paksa dari angka lain,
-        #    karena berisiko salah (contoh: '... Gula Garam (Natrium) 80 mg')
-        continue
+        if chosen_val is not None:
+            return chosen_val
 
     return None
 
@@ -192,31 +262,87 @@ def _parse_sugar_per_pack(lines) -> Optional[float]:
     return None
 
 
-# --------- Main function --------- #
+# --------- Main function (refactor untuk pakai data dari Roboflow) --------- #
 
-def parse_nutrition(raw_text: str) -> Dict:
+def parse_nutrition(
+    raw_text: str,
+    *,
+    text_takaran: str | None = None,
+    text_sajian: str | None = None,
+    text_gula: str | None = None,
+) -> Dict:
     """
-    Parsing teks label gizi (Indonesia)
-    menjadi dictionary nutrisi.
-    Fokus ke: takaran saji, jumlah sajian, gula.
-    Lebih mengutamakan 'kalau ragu, biarkan null' daripada salah angka.
+    Parsing teks label gizi (Indonesia) menjadi dictionary nutrisi.
+
+    Parameter:
+      - raw_text      : teks OCR UNION (misalnya hasil crop_union_bbox) -> fallback global.
+      - text_takaran  : teks OCR khusus area 'takaran_saji' (Roboflow ROI).
+      - text_sajian   : teks OCR khusus area 'sajian_per_kemasan'.
+      - text_gula     : teks OCR khusus area 'gula'.
+
+    Strategi:
+      1. Kalau ada text_takaran / text_sajian / text_gula, kita parsing dari situ dulu.
+      2. Kalau belum ketemu, baru fallback parsing dari raw_text union.
     """
-    cleaned = _clean_text(raw_text or "")
-    lines = cleaned.splitlines()
 
-    # 1. Takaran saji
-    serving_size_gram = _parse_serving_size_gram(lines)
+    # --- CLEAN & split global text (union) ---
+    cleaned_global = _clean_text(raw_text or "")
+    lines_global = cleaned_global.splitlines() if cleaned_global else []
 
-    # 2. Jumlah sajian per kemasan
-    servings_per_pack = _parse_servings_per_pack(lines)
+    # --- CLEAN & split segment teks (kalau ada) ---
+    cleaned_takaran = _clean_text(text_takaran) if text_takaran else ""
+    lines_takaran = cleaned_takaran.splitlines() if cleaned_takaran else []
 
-    # 3. Gula per sajian
-    sugar_per_serving_gram = _parse_sugar_per_serving(lines)
+    cleaned_sajian = _clean_text(text_sajian) if text_sajian else ""
+    lines_sajian = cleaned_sajian.splitlines() if cleaned_sajian else []
 
-    # 4. Gula per kemasan
-    sugar_per_pack_gram = _parse_sugar_per_pack(lines)
+    cleaned_gula = _clean_text(text_gula) if text_gula else ""
+    lines_gula = cleaned_gula.splitlines() if cleaned_gula else []
 
-    # 5. Kalau gula per kemasan tidak ada, tapi punya gula per sajian + jumlah sajian
+    # -----------------------------
+    # 1. Takaran saji (gram)
+    # -----------------------------
+    serving_size_gram = None
+
+    # a) Prioritas dari ROI takaran_saji (Roboflow)
+    if lines_takaran:
+        serving_size_gram = _parse_serving_size_gram(lines_takaran)
+
+    # b) Fallback dari teks global
+    if serving_size_gram is None and lines_global:
+        serving_size_gram = _parse_serving_size_gram(lines_global)
+
+    # -----------------------------
+    # 2. Sajian per kemasan
+    # -----------------------------
+    servings_per_pack = None
+
+    # a) Prioritas dari ROI sajian_per_kemasan
+    if lines_sajian:
+        servings_per_pack = _parse_servings_per_pack(lines_sajian)
+
+    # b) Fallback dari teks global
+    if servings_per_pack is None and lines_global:
+        servings_per_pack = _parse_servings_per_pack(lines_global)
+
+    # -----------------------------
+    # 3. Gula per sajian & per kemasan
+    # -----------------------------
+    sugar_per_serving_gram = None
+    sugar_per_pack_gram = None
+
+    # a) Prioritas dari ROI 'gula'
+    if lines_gula:
+        sugar_per_serving_gram = _parse_sugar_per_serving(lines_gula)
+        sugar_per_pack_gram = _parse_sugar_per_pack(lines_gula)
+
+    # b) Fallback dari teks global
+    if sugar_per_serving_gram is None and lines_global:
+        sugar_per_serving_gram = _parse_sugar_per_serving(lines_global)
+    if sugar_per_pack_gram is None and lines_global:
+        sugar_per_pack_gram = _parse_sugar_per_pack(lines_global)
+
+    # c) Turunan: kalau gula per kemasan None, tapi punya gula per sajian + jumlah sajian
     if (
         sugar_per_pack_gram is None
         and sugar_per_serving_gram is not None
