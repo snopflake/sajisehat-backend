@@ -7,24 +7,36 @@ import easyocr
 _reader = easyocr.Reader(['en', 'id'], gpu=False)
 
 
+def _bytes_to_cv2(image_bytes: bytes):
+    """Helper: bytes -> OpenCV BGR image."""
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    return img
+
+
 def extract_text(image_bytes: bytes) -> str:
     """
     Menerima bytes gambar, mengembalikkan teks hasil OCR
-    dalam bentuk string multiline.
+    dalam bentuk string multiline (PAKAI EasyOCR).
     """
-    # bytes -> numpy array
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    # decode ke image OpenCV (BGR)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    img = _bytes_to_cv2(image_bytes)
     if img is None:
         return ""
 
     # EasyOCR: detail=0 => hanya teksnya saja
     results = _reader.readtext(img, detail=0, paragraph=True)
 
-    # gabungkan jadi beberapa baris
     if not results:
         return ""
 
-    # results sudah berupa list string; kita gabung dengan newline
     return "\n".join(results)
+
+
+# --- COMPAT: biar routes.py yang sempat impor ini tidak error --- #
+
+# Sama persis dengan extract_text
+extract_text_easy = extract_text
+
+# Placeholder: tidak lagi pakai PaddleOCR, selalu kosong
+def extract_text_paddle(image_bytes: bytes) -> str:
+    return ""

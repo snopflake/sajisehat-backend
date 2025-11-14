@@ -1,7 +1,12 @@
 # app/routes.py
 from flask import Blueprint, jsonify, request
 
-from .ocr_engine import extract_text
+from .ocr_engine import (
+    extract_text,          # Easy (wrapper lama)
+    extract_text_easy,
+    extract_text_paddle,
+)
+
 from .nutrition_parser import (
     parse_nutrition,
     _clean_text,
@@ -68,7 +73,16 @@ def scan_nutrition():
         # 3. OCR UNION ROI (untuk raw_text umum & fallback)
         # --------------------------------------------------
         union_roi_bytes = crop_union_bbox(image_bytes, detections)
-        raw_text = extract_text(union_roi_bytes)
+
+        # OCR versi Easy
+        raw_text_easy = extract_text_easy(union_roi_bytes)
+
+        # OCR versi Paddle
+        raw_text_paddle = extract_text_paddle(union_roi_bytes)
+
+        # Untuk parsing utama, misalnya kita tetap prioritaskan Easy dulu,
+        # kalau kosong, pakai Paddle.
+        raw_text = raw_text_easy or raw_text_paddle
 
         # --------------------------------------------------
         # 4. OCR PER-CLASS (takaran saji, sajian per kemasan, gula)
@@ -128,17 +142,18 @@ def scan_nutrition():
             "message": "Nutrition label scanned via Roboflow + OCR",
             "data": {
                 "product_name": parsed.get("product_name"),
-                "raw_text": raw_text,
+                "raw_text": raw_text,  # yang dipakai parser (Easy dulu, kalau kosong ke Paddle)
                 "serving_size_gram": round(float(serving_size_gram), 2),
                 "servings_per_pack": int(round(float(servings_per_pack))),
                 "sugar_per_serving_gram": round(float(sugar_per_serving_gram), 2),
                 "sugar_per_pack_gram": round(float(sugar_per_pack_gram), 2),
                 "roboflow_detections": detections,
-                # debug tambahan biar gampang tuning
                 "debug": {
                     "text_takaran": text_takaran,
                     "text_sajian": text_sajian,
                     "text_gula": text_gula,
+                    "raw_text_easy": raw_text_easy,
+                    "raw_text_paddle": raw_text_paddle,
                 },
             }
         }), 200
