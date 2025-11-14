@@ -7,9 +7,13 @@ import cv2
 import numpy as np
 from inference_sdk import InferenceHTTPClient
 
+api_key = os.environ.get("ROBOFLOW_API_KEY")
+if not api_key:
+    raise RuntimeError("ROBOFLOW_API_KEY is not set. Please set it in your environment variables.")
+
 client = InferenceHTTPClient(
     api_url="https://serverless.roboflow.com",
-    api_key=os.environ.get("ROBOFLOW_API_KEY", "d1qPOdVAo8iIE0tIQlP1"),
+    api_key=api_key,
 )
 
 WORKSPACE_NAME = "nutritionrowstakarangula"
