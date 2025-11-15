@@ -1,109 +1,141 @@
-![Backend SAJISEHAT](https://github.com/snopflake/sajisehat-backend/raw/main/screenshot/backend_sajisehat_banner.png)
+[![Banner SAJISEHAT Backend](https://github.com/snopflake/sajisehat-backend/raw/main/screenshot/backend_sajisehat_banner.png)](https://github.com/snopflake/sajisehat-backend/raw/main/screenshot/backend_sajisehat_banner.png)
 
 # SAJISEHAT – Backend API 🍽️  
-**Layanan OCR & Analisis Gula untuk Aplikasi SAJISEHAT**
+**Layanan Deteksi Layout Label Gizi (Object Detection) untuk Aplikasi SAJISEHAT**
 
-Repository ini berisi **backend** untuk aplikasi SAJISEHAT.  
-Backend menyediakan endpoint HTTP untuk:
+Backend ini merupakan **layanan REST API** yang digunakan oleh aplikasi Android **SAJISEHAT** untuk:
 
-- Menerima **gambar label gizi** (nutrition facts) dari aplikasi mobile.
-- Memanggil **Roboflow Workflow** untuk deteksi layout (takaran saji, sajian per kemasan, gula, dll.).
-- Melakukan **OCR & parsing teks** label gizi.
-- Menghasilkan informasi terstruktur tentang **kandungan gula** yang siap dikonsumsi oleh frontend.
+- Menerima **gambar label gizi** dari aplikasi mobile  
+- Memanggil **Roboflow Workflow** untuk mendeteksi struktur layout label gizi  
+- Mengembalikan **koordinat objek penting** (takaran saji, sajian per kemasan, dan total gula)  
+- Digunakan frontend untuk menjalankan **OCR** menggunakan ML Kit Text Recognizer pada area yang tepat  
 
-Backend dikembangkan dengan **Flask** dan telah dideploy di platform Render dengan konfigurasi `gunicorn`.
+> Catatan penting:  
+> **Backend TIDAK melakukan OCR**.  
+> OCR dilakukan **sepenuhnya di Android** dengan ML Kit, berdasarkan bounding box yang dikirim dari backend.
 
----
-
-## 🔌 Arsitektur Singkat
-
-Alur utama backend:
-
-1. **Frontend** mengirimkan request `POST /scan-nutrition` dengan `image` (form-data).
-2. Endpoint memanggil `process_image_with_roboflow()`:
-   - Mengirim gambar ke **Roboflow Workflow** (`WORKSPACE_NAME = "nutritionrowstakarangula"`, `WORKFLOW_ID = "custom-workflow-5"`).
-   - Mengambil semua bounding box deteksi (gula, takaran saji, dsb.).
-   - Menghitung dimensi gambar (lebar, tinggi).
-3. Hasil workflow (detections + metadata) diproses dan teks label gizi diparsing oleh `parse_nutrition()`.
-4. Backend mengembalikan JSON berisi:
-   - `serving_size_gram`
-   - `servings_per_pack`
-   - `sugar_per_serving_gram`
-   - `sugar_per_pack_gram`
-   - `raw_text` hasil OCR
-   - metadata deteksi (list bounding box + ukuran gambar)
-
-Semua dikemas dalam format respons yang mudah digunakan oleh aplikasi Android SAJISEHAT.
+Backend dikembangkan menggunakan **Flask**, dan dideploy di **Render** menggunakan `gunicorn`.
 
 ---
 
-## 🧰 Daftar Framework, Library, & Tools yang Digunakan (BACKEND)
+## 🧩 Tujuan & Peran Backend
+
+### Masalah yang Ingin Dipecahkan
+- Label gizi biasanya berisi banyak teks sehingga OCR mentah sering salah membaca.
+- Dibutuhkan mekanisme untuk **mengidentifikasi area penting** dari label gizi, yaitu:
+  - Takaran saji
+  - Jumlah sajian per kemasan
+  - Total gula
+
+### Peran Backend SAJISEHAT
+1. **Mendeteksi layout label gizi melalui Roboflow**  
+   Backend menemukan dan menentukan **lokasi tiga objek utama** di gambar.
+
+2. **Mengirim bounding box ke frontend**  
+   Frontend kemudian menjalankan OCR **hanya pada area yang relevan**, sehingga:
+   - Akurasi OCR meningkat
+   - Noise teks lain berkurang drastis
+
+3. **Menjadi perantara antara aplikasi dan Roboflow Workflow**
+
+---
+
+## 🔌 Alur Kerja Utama Backend
+
+### Endpoint Utama: `POST /scan-nutrition`
+
+1. **Frontend → Backend**
+   - Aplikasi Android memotret label gizi menggunakan **ML Kit Document Scanner**.
+   - Gambar dikirim ke backend melalui endpoint `POST /scan-nutrition`.
+
+2. **Backend → Roboflow**
+   - Backend memanggil `process_image_with_roboflow()`, yang:
+     - Mengirim gambar ke **Roboflow Workflow**
+     - Workflow mendeteksi *tiga objek utama*:
+       - Takaran saji  
+       - Sajian per kemasan  
+       - Total gula  
+     - Menghasilkan koordinat bounding box tiap objek
+
+3. **Backend → Frontend**
+   - Backend mengembalikan respons JSON berisi:
+     - `detections` (bounding box + label objek)
+     - `image_width`, `image_height`
+     - Metadata lain yang relevan
+
+4. **Frontend (OCR)**
+   - Frontend melakukan OCR menggunakan **ML Kit Text Recognizer** terhadap:
+     - Setiap ROI (Region of Interest) berdasarkan bounding box hasil backend  
+   - Hasil OCR lalu diparsing menjadi nilai angka gula, takaran saji, dll.
+
+---
+
+## ✨ Fitur Utama Backend
+
+1. **Deteksi Layout Label Gizi (Roboflow Workflow)**
+2. **Object Detection untuk 3 komponen utama:**
+   - Takaran saji
+   - Sajian per kemasan
+   - Total gula
+3. **Menjalankan inference Roboflow melalui inference-sdk**
+4. **Mengembalikan bounding box siap pakai ke frontend Android**
+5. **Arsitektur sederhana dan optimal untuk pemrosesan serverless (Render)**
+
+---
+
+## 🧰 Framework, Library, & Tools yang Digunakan
 
 ### 1. Bahasa & Environment
+- Python 3.11
+- gunicorn (WSGI server)
+- Virtual environment (opsional)
 
-- **Python 3.11** (lihat `runtime.txt`)
-- **Virtual environment** (opsional tapi direkomendasikan)
-- **WSGI server**: `gunicorn` (lihat `Procfile`)
+### 2. Web Framework
+- **Flask**
+  - `create_app()` (Factory Pattern)
+  - Routing (`app/routes.py`)
 
-### 2. Web Framework & Server
+### 3. Computer Vision & Detection
+- **inference-sdk (Roboflow)**  
+- OpenCV (headless)  
+- NumPy  
+- Pillow (PIL)  
 
-- **Flask**  
-  Digunakan sebagai web framework utama untuk mendefinisikan:
-  - Aplikasi (`create_app()` di `app/__init__.py`)
-  - Blueprint & routing (`app/routes.py`)
+### 4. Utilitas
+- requests  
+- python-dotenv  
 
-- **gunicorn**  
-  Digunakan sebagai production server:  
-  `web: gunicorn run:app --workers 1 --threads 1 --timeout 300 -b 0.0.0.0:$PORT`
+### 5. Infrastruktur
+- Render PaaS  
+- Procfile  
+- runtime.txt  
+- Git & GitHub  
 
-### 3. Computer Vision, OCR, & Model Serving
+---
 
-- **inference-sdk** (Roboflow)  
-  - Menghubungkan backend ke Roboflow Serverless API (`InferenceHTTPClient`).
-  - Menjalankan **Roboflow Workflow** untuk mendeteksi layout label gizi.
+## 🏛️ Arsitektur Kode Backend
 
-- **OpenCV (opencv-python-headless)**  
-  - Memproses gambar (decode dari bytes, crop ROI berdasarkan bounding boxes).
-  - Menggabungkan bounding box (`crop_union_bbox`) jika diperlukan.
-
-- **NumPy**  
-  - Representasi array/gambar sebagai `ndarray`.
-  - Operasi numerik sederhana untuk bounding box & dimensi gambar.
-
-- **Pillow (PIL)**  
-  - Membaca gambar dari bytes.
-  - Mengambil ukuran gambar jika metadata dari Roboflow kosong.
-
-### 4. HTTP & Utilitas
-
-- **requests**  
-  - Utilitas HTTP umum (jika dibutuhkan untuk integrasi tambahan).
-
-- **python-dotenv**  
-  - Memuat environment variables dari `.env` saat development (misalnya `ROBOFLOW_API_KEY`).
-
-### 5. Tools Pendukung & Infrastruktur
-
-- **Procfile**  
-  - Konfigurasi proses web untuk deployment PaaS (Render / Heroku / dsb.).
-
-- **Git & GitHub**  
-  - Version control & kolaborasi.
+- `app/__init__.py` → inisialisasi Flask  
+- `app/routes.py` → endpoint `/scan-nutrition`  
+- `app/roboflow_client.py` → mengirim gambar ke workflow Roboflow  
+- `app/roboflow_engine.py` →  orkestrasi pipeline ke Roboflow  
+- `run.py` → entry point aplikasi  
 
 ---
 
 ## 📁 Struktur Folder
 
 ```text
-sajisehat-backend-main/
+sajisehat-backend/
 ├─ app/
-│  ├─ __init__.py          # Factory pattern Flask: create_app()
-│  ├─ routes.py            # Endpoint utama /scan-nutrition
-│  ├─ ocr_engine.py        # Orkestrasi proses OCR via Roboflow
-│  ├─ roboflow_client.py   # Client Roboflow (InferenceHTTPClient + workflow)
-│  ├─ nutrition_parser.py  # Parsing teks label gizi → nilai gula & takaran saji
-├─ run.py                  # Entry point Flask app (untuk dev & gunicorn)
-├─ requirements.txt        # Dependency backend (UTF-16 encoded)
-├─ Procfile                # Konfigurasi gunicorn untuk deployment
-├─ runtime.txt             # Versi Python (3.11.9)
+│  ├─ __init__.py
+│  ├─ routes.py
+│  ├─ roboflow_engine.py
+│  ├─ roboflow_client.py
+├─ run.py
+├─ requirements.txt
+├─ Procfile
+├─ runtime.txt
+├─ screenshot/
+│  └─ backend_sajisehat_banner.png
 └─ .gitignore
