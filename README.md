@@ -39,9 +39,6 @@ Semua dikemas dalam format respons yang mudah digunakan oleh aplikasi Android SA
 
 ## 🧰 Daftar Framework, Library, & Tools yang Digunakan (BACKEND)
 
-> **Catatan:** Bagian ini dibuat khusus untuk memenuhi ketentuan lomba:  
-> *“Peserta wajib mencantumkan daftar framework, library, atau tools yang digunakan dalam dokumentasi teknis (README atau proposal teknis).”*
-
 ### 1. Bahasa & Environment
 
 - **Python 3.11** (lihat `runtime.txt`)
