@@ -1,7 +1,6 @@
 from flask import Blueprint, jsonify, request
 
-from .ocr_engine import process_image_with_roboflow
-from .nutrition_parser import parse_nutrition
+from .roboflow_engine import process_image_with_roboflow
 
 bp = Blueprint("main", __name__)
 
