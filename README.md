@@ -82,6 +82,80 @@ Backend dikembangkan menggunakan **Flask**, dan dideploy di **Render** menggunak
 5. **Arsitektur sederhana dan optimal untuk pemrosesan serverless (Render)**
 
 ---
+## 🔄 Alur Fitur Scan (POV Backend SAJISEHAT)
+
+![Alur Fitur Scan](https://github.com/snopflake/sajisehat-backend/raw/main/screenshot/alur_fitur_scan.png)
+
+1. **Menerima Gambar dari Frontend**  
+   - Backend menerima request `POST /scan-nutrition` berisi file `image` (multipart/form-data).  
+   - File gambar dibaca sebagai bytes dan dikonversi menjadi array gambar menggunakan **OpenCV / PIL**.
+
+2. **Mengirim Gambar ke Roboflow Workflow**  
+   - Backend memanggil **Roboflow Serverless Workflow** menggunakan `InferenceHTTPClient` dari **inference-sdk**.  
+   - Workflow melakukan **layout detection** untuk menemukan tiga objek utama pada label gizi:
+     - Takaran saji (*serving size*)  
+     - Jumlah sajian per kemasan (*servings per container*)  
+     - Jumlah gula (*sugar content*)  
+   - Workflow mengembalikan:
+     - bounding box setiap objek,  
+     - confidence score,  
+     - ukuran gambar (`image_width`, `image_height`),  
+     - hasil OCR bawaan (jika tersedia).
+
+3. **Pemrosesan Bounding Box & Metadata**  
+   - Backend membangun struktur data final untuk setiap deteksi:
+     - `class` (misal: `gula`, `takaran_saji`, `sajian_per_kemasan`)  
+     - koordinat bounding box (`x`, `y`, `width`, `height`)  
+     - `confidence`  
+   - Jika ukuran gambar tidak tersedia dari workflow, backend menghitungnya menggunakan **PIL**.
+
+4. **Orkestrasi OCR & Parsing Nilai Gizi**  
+   - Backend menggabungkan hasil workflow dan teks OCR menjadi teks mentah (`raw_text`).  
+   - Fungsi `parse_nutrition()` mengekstrak nilai numerik dari teks, seperti:
+     - `serving_size_gram` (takaran saji dalam gram/ml)  
+     - `servings_per_pack` (jumlah sajian per kemasan)  
+     - `sugar_per_serving_gram`  
+     - `sugar_per_pack_gram`  
+   - Proses ini melibatkan:
+     - normalisasi teks,  
+     - penggunaan regex,  
+     - fallback jika format teks tidak standar.
+
+5. **Menghasilkan Respons Terstruktur untuk Frontend**  
+   - Backend mengembalikan respons JSON terstruktur, misalnya:
+     ```json
+     {
+       "success": true,
+       "message": "Nutrition label parsed successfully",
+       "data": {
+         "raw_text": "TAKARAN SAJI 200 ml ... Gula 18 g ...",
+         "serving_size_gram": 200.0,
+         "servings_per_pack": 1.0,
+         "sugar_per_serving_gram": 18.0,
+         "sugar_per_pack_gram": 18.0
+       },
+       "meta": {
+         "detections": [
+           {
+             "class": "gula",
+             "x": 123.4,
+             "y": 56.7,
+             "width": 80.0,
+             "height": 20.0,
+             "confidence": 0.94
+           }
+         ],
+         "image_width": 1080,
+         "image_height": 1920
+       }
+     }
+     ```
+   - Data ini kemudian digunakan oleh frontend untuk:
+     - menampilkan hasil ekstraksi gula ke pengguna,  
+     - menghitung estimasi persentase konsumsi gula harian,  
+     - menyimpan riwayat konsumsi di **Cloud Firestore**.
+
+---
 
 ## 🧰 Framework, Library, & Tools yang Digunakan
 
