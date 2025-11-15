@@ -8,11 +8,11 @@ Backend ini merupakan **layanan REST API** yang digunakan oleh aplikasi Android 
 - Menerima **gambar label gizi** dari aplikasi mobile  
 - Memanggil **Roboflow Workflow** untuk mendeteksi struktur layout label gizi  
 - Mengembalikan **koordinat objek penting** (takaran saji, sajian per kemasan, dan total gula)  
-- Digunakan frontend untuk menjalankan **OCR** menggunakan ML Kit Text Recognizer pada area yang tepat  
+- Menyediakan data bounding box yang akan digunakan frontend untuk menjalankan **OCR** menggunakan ML Kit Text Recognizer pada area yang tepat  
 
-> Catatan penting:  
-> **Backend TIDAK melakukan OCR**.  
-> OCR dilakukan **sepenuhnya di Android** dengan ML Kit, berdasarkan bounding box yang dikirim dari backend.
+> 💡 Catatan penting:  
+> **Backend TIDAK melakukan OCR dan TIDAK melakukan parsing nilai gizi.**  
+> OCR dan parsing angka (takaran saji, sajian per kemasan, total gula) dilakukan **sepenuhnya di Android** menggunakan ML Kit, berdasarkan bounding box yang dikirim dari backend.
 
 Backend dikembangkan menggunakan **Flask**, dan dideploy di **Render** menggunakan `gunicorn`.
 
@@ -21,22 +21,29 @@ Backend dikembangkan menggunakan **Flask**, dan dideploy di **Render** menggunak
 ## 🧩 Tujuan & Peran Backend
 
 ### Masalah yang Ingin Dipecahkan
-- Label gizi biasanya berisi banyak teks sehingga OCR mentah sering salah membaca.
-- Dibutuhkan mekanisme untuk **mengidentifikasi area penting** dari label gizi, yaitu:
-  - Takaran saji
-  - Jumlah sajian per kemasan
-  - Total gula
+
+- Label gizi biasanya berisi banyak teks (bahan, klaim marketing, informasi pabrik, dll.) sehingga OCR mentah sering:
+  - salah baca posisi,
+  - tertangkap teks yang tidak relevan,
+  - menghasilkan noise yang menyulitkan parsing.
+- Diperlukan mekanisme untuk **mengidentifikasi area penting** pada label gizi, khususnya:
+  - **Takaran saji**
+  - **Jumlah sajian per kemasan**
+  - **Total gula**
 
 ### Peran Backend SAJISEHAT
+
 1. **Mendeteksi layout label gizi melalui Roboflow**  
-   Backend menemukan dan menentukan **lokasi tiga objek utama** di gambar.
+   Backend menemukan dan menentukan **lokasi tiga objek utama** (takaran saji, sajian per kemasan, total gula) di dalam gambar.
 
-2. **Mengirim bounding box ke frontend**  
+2. **Mengirim bounding box ke frontend Android**  
    Frontend kemudian menjalankan OCR **hanya pada area yang relevan**, sehingga:
-   - Akurasi OCR meningkat
-   - Noise teks lain berkurang drastis
+   - Akurasi OCR meningkat  
+   - Noise teks lain berkurang drastis  
 
-3. **Menjadi perantara antara aplikasi dan Roboflow Workflow**
+3. **Menjadi perantara antara aplikasi dan Roboflow Workflow**  
+   - Frontend hanya perlu mengirim gambar ke backend.  
+   - Backend yang mengurus pemanggilan Roboflow dan merapikan hasil deteksi menjadi format JSON yang mudah dikonsumsi.
 
 ---
 
@@ -45,50 +52,46 @@ Backend dikembangkan menggunakan **Flask**, dan dideploy di **Render** menggunak
 ### Endpoint Utama: `POST /scan-nutrition`
 
 1. **Frontend → Backend**
-   - Aplikasi Android memotret label gizi menggunakan **ML Kit Document Scanner**.
-   - Gambar dikirim ke backend melalui endpoint `POST /scan-nutrition`.
+   - Aplikasi Android memotret label gizi (mis. via **ML Kit Document Scanner**).
+   - Gambar dikirim ke backend melalui endpoint:
+     ```text
+     POST /scan-nutrition
+     ```
+   - Backend menerima file `image` dalam format `multipart/form-data`.
 
 2. **Backend → Roboflow**
-   - Backend memanggil `process_image_with_roboflow()`, yang:
-     - Mengirim gambar ke **Roboflow Workflow**
+   - Fungsi `process_image_with_roboflow()`:
+     - Menerima gambar dari request,
+     - Mengirim gambar ke **Roboflow Workflow**,
      - Workflow mendeteksi *tiga objek utama*:
        - Takaran saji  
        - Sajian per kemasan  
        - Total gula  
-     - Menghasilkan koordinat bounding box tiap objek
+     - Menghasilkan koordinat bounding box + label kelas + confidence.
 
-3. **Backend → Frontend**
+3. **Pemrosesan Hasil Workflow**
+   - Backend menormalkan hasil deteksi menjadi struktur data yang konsisten:
+     - `class` (misal: `gula`, `takaran_saji`, `sajian_per_kemasan`)  
+     - Koordinat bounding box (`x`, `y`, `width`, `height`)  
+     - `confidence`  
+   - Backend juga memastikan informasi dimensi gambar (`image_width`, `image_height`) tersedia (mengambil dari workflow atau menghitung ulang via **PIL** bila perlu).
+
+4. **Backend → Frontend**
    - Backend mengembalikan respons JSON berisi:
-     - `detections` (bounding box + label objek)
-     - `image_width`, `image_height`
-     - Metadata lain yang relevan
-
-4. **Frontend (OCR)**
-   - Frontend melakukan OCR menggunakan **ML Kit Text Recognizer** terhadap:
-     - Setiap ROI (Region of Interest) berdasarkan bounding box hasil backend  
-   - Hasil OCR lalu diparsing menjadi nilai angka gula, takaran saji, dll.
+     - `detections` (list bounding box + label objek)  
+     - `image_width`, `image_height`  
+     - metadata lain jika diperlukan
+   - Data ini digunakan frontend untuk menjalankan OCR pada ROI yang tepat dan melakukan parsing nilai gizi di sisi Android.
 
 ---
 
-## ✨ Fitur Utama Backend
-
-1. **Deteksi Layout Label Gizi (Roboflow Workflow)**
-2. **Object Detection untuk 3 komponen utama:**
-   - Takaran saji
-   - Sajian per kemasan
-   - Total gula
-3. **Menjalankan inference Roboflow melalui inference-sdk**
-4. **Mengembalikan bounding box siap pakai ke frontend Android**
-5. **Arsitektur sederhana dan optimal untuk pemrosesan serverless (Render)**
-
----
 ## 🔄 Alur Fitur Scan (POV Backend SAJISEHAT)
 
 ![Alur Fitur Scan](https://github.com/snopflake/sajisehat-backend/raw/main/screenshot/alur_fitur_scan.png)
 
 1. **Menerima Gambar dari Frontend**  
-   - Backend menerima request `POST /scan-nutrition` berisi file `image` (multipart/form-data).  
-   - File gambar dibaca sebagai bytes dan dikonversi menjadi array gambar menggunakan **OpenCV / PIL**.
+   - Backend menerima request `POST /scan-nutrition` dengan file `image` (multipart/form-data).  
+   - Gambar dibaca sebagai bytes lalu dikonversi menjadi representasi yang siap dikirim ke Roboflow (mis. `bytes` / `ndarray` via **OpenCV / PIL** sesuai kebutuhan client Roboflow).
 
 2. **Mengirim Gambar ke Roboflow Workflow**  
    - Backend memanggil **Roboflow Serverless Workflow** menggunakan `InferenceHTTPClient` dari **inference-sdk**.  
@@ -97,44 +100,24 @@ Backend dikembangkan menggunakan **Flask**, dan dideploy di **Render** menggunak
      - Jumlah sajian per kemasan (*servings per container*)  
      - Jumlah gula (*sugar content*)  
    - Workflow mengembalikan:
-     - bounding box setiap objek,  
-     - confidence score,  
-     - ukuran gambar (`image_width`, `image_height`),  
-     - hasil OCR bawaan (jika tersedia).
+     - bounding box setiap objek,
+     - confidence score,
+     - (jika tersedia) metadata dimensi gambar.
 
 3. **Pemrosesan Bounding Box & Metadata**  
    - Backend membangun struktur data final untuk setiap deteksi:
      - `class` (misal: `gula`, `takaran_saji`, `sajian_per_kemasan`)  
-     - koordinat bounding box (`x`, `y`, `width`, `height`)  
+     - Koordinat bounding box (`x`, `y`, `width`, `height`)  
      - `confidence`  
    - Jika ukuran gambar tidak tersedia dari workflow, backend menghitungnya menggunakan **PIL**.
 
-4. **Orkestrasi OCR & Parsing Nilai Gizi**  
-   - Backend menggabungkan hasil workflow dan teks OCR menjadi teks mentah (`raw_text`).  
-   - Fungsi `parse_nutrition()` mengekstrak nilai numerik dari teks, seperti:
-     - `serving_size_gram` (takaran saji dalam gram/ml)  
-     - `servings_per_pack` (jumlah sajian per kemasan)  
-     - `sugar_per_serving_gram`  
-     - `sugar_per_pack_gram`  
-   - Proses ini melibatkan:
-     - normalisasi teks,  
-     - penggunaan regex,  
-     - fallback jika format teks tidak standar.
-
-5. **Menghasilkan Respons Terstruktur untuk Frontend**  
-   - Backend mengembalikan respons JSON terstruktur, misalnya:
+4. **Menyusun Respons JSON ke Frontend**  
+   - Backend menyusun respons JSON yang berisi:
      ```json
      {
        "success": true,
-       "message": "Nutrition label parsed successfully",
+       "message": "Deteksi layout label gizi berhasil",
        "data": {
-         "raw_text": "TAKARAN SAJI 200 ml ... Gula 18 g ...",
-         "serving_size_gram": 200.0,
-         "servings_per_pack": 1.0,
-         "sugar_per_serving_gram": 18.0,
-         "sugar_per_pack_gram": 18.0
-       },
-       "meta": {
          "detections": [
            {
              "class": "gula",
@@ -143,6 +126,14 @@ Backend dikembangkan menggunakan **Flask**, dan dideploy di **Render** menggunak
              "width": 80.0,
              "height": 20.0,
              "confidence": 0.94
+           },
+           {
+             "class": "takaran_saji",
+             "x": 50.0,
+             "y": 100.0,
+             "width": 120.0,
+             "height": 25.0,
+             "confidence": 0.91
            }
          ],
          "image_width": 1080,
@@ -150,50 +141,98 @@ Backend dikembangkan menggunakan **Flask**, dan dideploy di **Render** menggunak
        }
      }
      ```
-   - Data ini kemudian digunakan oleh frontend untuk:
-     - menampilkan hasil ekstraksi gula ke pengguna,  
-     - menghitung estimasi persentase konsumsi gula harian,  
-     - menyimpan riwayat konsumsi di **Cloud Firestore**.
+   - Di sisi frontend, data ini digunakan untuk:
+     - Menentukan ROI OCR di Android (ML Kit Text Recognizer),  
+     - Melakukan parsing nilai takaran saji, sajian per kemasan, dan total gula di perangkat,  
+     - Menampilkan hasil ke pengguna dan menyimpan riwayat ke **Cloud Firestore**.
 
 ---
 
 ## 🧰 Framework, Library, & Tools yang Digunakan
 
+> Bagian ini disusun untuk memenuhi ketentuan lomba:  
+> *“Peserta wajib mencantumkan daftar framework, library, atau tools yang digunakan dalam dokumentasi teknis (README atau proposal teknis).”*
+
 ### 1. Bahasa & Environment
-- Python 3.11
-- gunicorn (WSGI server)
-- Virtual environment (opsional)
+
+- **Python 3.11** (lihat `runtime.txt`)
+- **Virtual environment** (opsional, direkomendasikan untuk isolasi lingkungan)
+- **WSGI server**: `gunicorn` (konfigurasi di `Procfile`)
 
 ### 2. Web Framework
-- **Flask**
-  - `create_app()` (Factory Pattern)
-  - Routing (`app/routes.py`)
 
-### 3. Computer Vision & Detection
+- **Flask**
+  - Factory pattern (`create_app()` di `app/__init__.py`)
+  - Routing endpoint (`app/routes.py`) untuk:
+    - `POST /scan-nutrition`
+
+### 3. Computer Vision & Object Detection
+
 - **inference-sdk (Roboflow)**  
-- OpenCV (headless)  
-- NumPy  
-- Pillow (PIL)  
+  - `InferenceHTTPClient` untuk memanggil Roboflow Workflow dari backend.
+  - Melakukan layout detection terhadap label gizi.
+
+- **OpenCV (opencv-python-headless)**  
+  - Utilitas pemrosesan gambar (decode gambar, manipulasi dasar jika diperlukan).
+
+- **NumPy**  
+  - Representasi data gambar dan koordinat sebagai `ndarray`.
+  - Operasi numerik untuk perhitungan bounding box / dimensi.
+
+- **Pillow (PIL)**  
+  - Membaca gambar dan mendapatkan ukuran gambar (`width`, `height`).
 
 ### 4. Utilitas
-- requests  
-- python-dotenv  
 
-### 5. Infrastruktur
-- Render PaaS  
-- Procfile  
-- runtime.txt  
-- Git & GitHub  
+- **requests**  
+  - HTTP client umum (digunakan bila ada integrasi tambahan).
+
+- **python-dotenv**  
+  - Membaca konfigurasi dari `.env` pada saat development (misalnya `ROBOFLOW_API_KEY`).
+
+### 5. Infrastruktur & DevOps
+
+- **Render**  
+  - Platform deployment **PaaS** untuk menjalankan backend Flask + gunicorn.
+
+- **Procfile**  
+  - Mendefinisikan proses yang dijalankan Render:
+    ```Procfile
+    web: gunicorn run:app --workers 1 --threads 1 --timeout 300 -b 0.0.0.0:$PORT
+    ```
+
+- **runtime.txt**  
+  - Menentukan versi Python (misalnya: `python-3.11.9`).
+
+- **Git & GitHub**  
+  - Version control dan hosting source code.
 
 ---
 
 ## 🏛️ Arsitektur Kode Backend
 
-- `app/__init__.py` → inisialisasi Flask  
-- `app/routes.py` → endpoint `/scan-nutrition`  
-- `app/roboflow_client.py` → mengirim gambar ke workflow Roboflow  
-- `app/roboflow_engine.py` →  orkestrasi pipeline ke Roboflow  
-- `run.py` → entry point aplikasi  
+- `app/__init__.py`  
+  Inisialisasi aplikasi Flask menggunakan factory pattern (`create_app()`).
+
+- `app/routes.py`  
+  Mendefinisikan endpoint utama `POST /scan-nutrition` yang:
+  - menerima gambar dari frontend,
+  - memanggil engine Roboflow,
+  - mengembalikan JSON bounding box ke frontend.
+
+- `app/roboflow_engine.py`  
+  Mengatur pipeline pemrosesan gambar dan pemanggilan workflow Roboflow:
+  - menyiapkan payload gambar,
+  - memanggil **InferenceHTTPClient**,
+  - menormalkan hasil deteksi menjadi format internal backend.
+
+- `app/roboflow_client.py`  
+  Menginisialisasi client Roboflow:
+  - konfigurasi `WORKSPACE_NAME` dan `WORKFLOW_ID`,
+  - fungsi helper untuk memanggil workflow.
+
+- `run.py`  
+  Entry point untuk menjalankan aplikasi (lokal maupun melalui gunicorn).
 
 ---
 
@@ -202,14 +241,15 @@ Backend dikembangkan menggunakan **Flask**, dan dideploy di **Render** menggunak
 ```text
 sajisehat-backend/
 ├─ app/
-│  ├─ __init__.py
-│  ├─ routes.py
-│  ├─ roboflow_engine.py
-│  ├─ roboflow_client.py
-├─ run.py
-├─ requirements.txt
-├─ Procfile
-├─ runtime.txt
+│  ├─ __init__.py           # Factory pattern Flask: create_app()
+│  ├─ routes.py             # Endpoint utama: POST /scan-nutrition
+│  ├─ roboflow_engine.py    # Orkestrasi pipeline ke Roboflow Workflow
+│  ├─ roboflow_client.py    # Client Roboflow (InferenceHTTPClient + konfigurasi)
+├─ run.py                   # Entry point aplikasi
+├─ requirements.txt         # Dependency backend (encoded UTF-16)
+├─ Procfile                 # Konfigurasi proses gunicorn untuk deployment
+├─ runtime.txt              # Versi Python (misalnya python-3.11.9)
 ├─ screenshot/
-│  └─ backend_sajisehat_banner.png
+│  ├─ backend_sajisehat_banner.png
+│  └─ alur_fitur_scan.png
 └─ .gitignore
