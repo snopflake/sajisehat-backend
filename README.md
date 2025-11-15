@@ -1,4 +1,4 @@
-
+![Backend SAJISEHAT](https://github.com/snopflake/sajisehat-backend/raw/main/screenshot/backend_sajisehat_banner.png)
 
 # SAJISEHAT – Backend API 🍽️  
 **Layanan OCR & Analisis Gula untuk Aplikasi SAJISEHAT**
@@ -11,7 +11,7 @@ Backend menyediakan endpoint HTTP untuk:
 - Melakukan **OCR & parsing teks** label gizi.
 - Menghasilkan informasi terstruktur tentang **kandungan gula** yang siap dikonsumsi oleh frontend.
 
-Backend ditulis dengan **Flask** dan siap dideploy di platform seperti Render / Railway / Fly.io / Heroku dengan konfigurasi `gunicorn`.
+Backend dikembangkan dengan **Flask** dan telah dideploy di platform Render dengan konfigurasi `gunicorn`.
 
 ---
 
